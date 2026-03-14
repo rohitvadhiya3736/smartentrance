@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ESP32-CAM · Face Detection</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Syne:wght@400;700;800&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --bg:       #080c10;
+    --panel:    #0d1318;
+    --border:   #1a2a35;
+    --accent:   #00ffc8;
+    --accent2:  #0090ff;
+    --warn:     #ff4560;
+    --text:     #c8dde8;
+    --muted:    #3a5060;
+    --glow:     0 0 18px #00ffc840;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── scanline overlay ── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,255,200,.018) 2px,
+      rgba(0,255,200,.018) 4px
+    );
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  /* ── header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 32px;
+    border-bottom: 1px solid var(--border);
+    background: #0a1018ee;
+    backdrop-filter: blur(8px);
+    position: sticky; top: 0; z-index: 50;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-icon {
+    width: 36px; height: 36px;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: var(--glow);
+    animation: pulse 2.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { box-shadow: 0 0 8px #00ffc840; }
+    50%      { box-shadow: 0 0 22px #00ffc8a0; }
+  }
+  .logo-icon svg { width:20px; height:20px; fill:var(--accent); }
+  h1 { font-size: 1.05rem; font-weight: 800; letter-spacing:.08em; color:#fff; }
+  h1 span { color: var(--accent); }
+  .mono { font-family: 'Share Tech Mono', monospace; }
+
+  .server-status {
+    display: flex; align-items: center; gap: 8px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: .75rem;
+  }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--warn);
+    transition: background .4s;
+  }
+  .dot.online { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+
+  /* ── main grid ── */
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: auto auto 1fr;
+    gap: 16px;
+    padding: 24px 32px;
+    max-width: 1300px;
+    margin: 0 auto;
+  }
+
+  /* ── stat cards ── */
+  .stats-row {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+  .stat-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color .3s;
+  }
+  .stat-card::after {
+    content: '';
+    position: absolute; bottom: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform .4s;
+  }
+  .stat-card:hover::after { transform: scaleX(1); }
+  .stat-card:hover { border-color: var(--accent); }
+  .stat-label {
+    font-size: .65rem;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .stat-value {
+    font-size: 2.2rem;
+    font-weight: 800;
+    color: #fff;
+    line-height: 1;
+  }
+  .stat-value.green  { color: var(--accent); }
+  .stat-value.red    { color: var(--warn); }
+  .stat-value.blue   { color: var(--accent2); }
+
+  /* ── camera feed panel ── */
+  .camera-panel {
+    grid-column: 1 / 3;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .panel-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .panel-title {
+    font-size: .72rem;
+    letter-spacing: .15em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .rec-badge {
+    display: flex; align-items: center; gap: 6px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: .68rem;
+    color: var(--warn);
+  }
+  .rec-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--warn);
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity:0; } }
+
+  .camera-feed {
+    position: relative;
+    background: #000;
+    aspect-ratio: 4/3;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #last-image {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: none;
+  }
+  .no-feed {
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    color: var(--muted);
+  }
+  .no-feed svg { width:48px; height:48px; opacity:.4; }
+  .no-feed p { font-size: .8rem; font-family:'Share Tech Mono',monospace; }
+
+  /* face overlay box */
+  .face-box {
+    position: absolute;
+    border: 2px solid var(--accent);
+    box-shadow: var(--glow);
+    border-radius: 4px;
+    animation: fadeBox .3s ease;
+    display: none;
+  }
+  @keyframes fadeBox { from { opacity:0; transform:scale(1.05); } }
+
+  /* corner decorations */
+  .corner {
+    position: absolute;
+    width: 16px; height: 16px;
+    border-color: var(--accent);
+    border-style: solid;
+    opacity: .6;
+  }
+  .corner.tl { top:12px; left:12px; border-width:2px 0 0 2px; }
+  .corner.tr { top:12px; right:12px; border-width:2px 2px 0 0; }
+  .corner.bl { bottom:12px; left:12px; border-width:0 0 2px 2px; }
+  .corner.br { bottom:12px; right:12px; border-width:0 2px 2px 0; }
+
+  /* ── result panel ── */
+  .result-panel {
+    grid-column: 3 / 4;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .result-body { padding: 20px; flex: 1; }
+
+  .result-status {
+    text-align: center;
+    padding: 24px 0 16px;
+  }
+  .status-icon {
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    margin: 0 auto 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+    background: var(--border);
+    border: 2px solid var(--muted);
+    transition: all .4s;
+  }
+  .status-icon.detected {
+    background: #00ffc81a;
+    border-color: var(--accent);
+    box-shadow: var(--glow);
+  }
+  .status-icon.not-detected {
+    background: #ff45601a;
+    border-color: var(--warn);
+    box-shadow: 0 0 18px #ff456040;
+  }
+
+  .status-text {
+    font-size: 1rem;
+    font-weight: 800;
+    letter-spacing: .05em;
+  }
+  .status-text.detected   { color: var(--accent); }
+  .status-text.not-detected { color: var(--warn); }
+  .status-text.waiting    { color: var(--muted); }
+
+  .attrs { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
+  .attr-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    background: #111820;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  .attr-label {
+    font-size: .65rem; letter-spacing:.12em; text-transform:uppercase; color:var(--muted);
+  }
+  .attr-val {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: .85rem;
+    color: #fff;
+  }
+  .attr-val.highlight { color: var(--accent); }
+
+  /* ── log panel ── */
+  .log-panel {
+    grid-column: 1 / -1;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .log-list {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  .log-list::-webkit-scrollbar { width: 4px; }
+  .log-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .log-entry {
+    display: grid;
+    grid-template-columns: 160px 100px 1fr;
+    gap: 12px;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: #0a1018;
+    border-left: 3px solid var(--muted);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: .72rem;
+    animation: slideIn .3s ease;
+  }
+  @keyframes slideIn { from { opacity:0; transform:translateY(-6px); } }
+  .log-entry.face  { border-left-color: var(--accent); }
+  .log-entry.noface { border-left-color: var(--warn); }
+  .log-time { color: var(--muted); }
+  .log-badge {
+    padding: 2px 8px; border-radius: 4px;
+    font-size: .65rem; font-weight:700; text-transform:uppercase;
+    letter-spacing:.08em;
+  }
+  .log-badge.face  { background:#00ffc815; color:var(--accent); border:1px solid var(--accent); }
+  .log-badge.noface { background:#ff456015; color:var(--warn); border:1px solid var(--warn); }
+  .log-info { color: var(--text); }
+
+  .empty-log {
+    padding: 32px;
+    text-align: center;
+    color: var(--muted);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: .8rem;
+  }
+
+  /* ── ngrok instructions box ── */
+  .instructions {
+    grid-column: 1 / -1;
+    background: #0a1420;
+    border: 1px solid #1a3050;
+    border-radius: 12px;
+    padding: 24px 28px;
+  }
+  .instructions h2 {
+    font-size: .75rem; letter-spacing:.15em; text-transform:uppercase;
+    color: var(--accent2); margin-bottom: 16px;
+  }
+  .steps { display: grid; grid-template-columns: repeat(3,1fr); gap:16px; }
+  .step {
+    background: #0d1828;
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid #1a3050;
+  }
+  .step-num {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--accent2);
+    color: #000;
+    font-weight: 800; font-size: .75rem;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 10px;
+  }
+  .step h3 { font-size: .8rem; margin-bottom: 6px; color: #fff; }
+  .step p  { font-size: .72rem; color: var(--muted); line-height: 1.5; }
+  .step code {
+    display: inline-block;
+    background: #111c2a;
+    color: var(--accent);
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: .7rem;
+    margin-top: 6px;
+  }
+
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr; padding: 16px; }
+    .stats-row { grid-template-columns: repeat(2,1fr); }
+    .camera-panel, .result-panel { grid-column: 1/-1; }
+    .steps { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">
+      <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z"/></svg>
+    </div>
+    <h1>ESP32<span>·</span>FACE DETECT</h1>
+  </div>
+  <div class="server-status mono">
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">CONNECTING…</span>
+  </div>
+</header>
+
+<div class="grid">
+
+  <!-- Stats row -->
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Total Scans</div>
+      <div class="stat-value blue" id="stat-total">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Faces Detected</div>
+      <div class="stat-value green" id="stat-detected">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">No Face</div>
+      <div class="stat-value red" id="stat-noface">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Last Process Time</div>
+      <div class="stat-value mono" id="stat-time" style="font-size:1.6rem">—</div>
+    </div>
+  </div>
+
+  <!-- Camera feed -->
+  <div class="camera-panel">
+    <div class="panel-header">
+      <span class="panel-title">📷 Last Captured Frame</span>
+      <div class="rec-badge"><div class="rec-dot"></div> LIVE FEED</div>
+    </div>
+    <div class="camera-feed">
+      <div class="corner tl"></div>
+      <div class="corner tr"></div>
+      <div class="corner bl"></div>
+      <div class="corner br"></div>
+      <img id="last-image" alt="capture"/>
+      <div class="no-feed" id="no-feed">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+        <p>Waiting for ESP32-CAM…</p>
+      </div>
+      <div class="face-box" id="face-box"></div>
+    </div>
+  </div>
+
+  <!-- Result panel -->
+  <div class="result-panel">
+    <div class="panel-header">
+      <span class="panel-title">🔍 Detection Result</span>
+    </div>
+    <div class="result-body">
+      <div class="result-status">
+        <div class="status-icon" id="status-icon">🤖</div>
+        <div class="status-text waiting" id="status-label">WAITING FOR IMAGE</div>
+      </div>
+      <div class="attrs" id="attrs" style="display:none">
+        <div class="attr-row">
+          <span class="attr-label">Age</span>
+          <span class="attr-val highlight" id="attr-age">—</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-label">Gender</span>
+          <span class="attr-val" id="attr-gender">—</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-label">Emotion</span>
+          <span class="attr-val" id="attr-emotion">—</span>
+        </div>
+        <div class="attr-row">
+          <span class="attr-label">Timestamp</span>
+          <span class="attr-val mono" id="attr-time" style="font-size:.7rem">—</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Detection log -->
+  <div class="log-panel">
+    <div class="panel-header">
+      <span class="panel-title">📋 Detection Log</span>
+      <span class="mono" style="font-size:.65rem;color:var(--muted)">AUTO REFRESH · 3s</span>
+    </div>
+    <div class="log-list" id="log-list">
+      <div class="empty-log">No detections yet — waiting for ESP32-CAM to send images…</div>
+    </div>
+  </div>
+
+  <!-- Setup instructions -->
+  <div class="instructions">
+    <h2>⚡ Quick Setup Guide</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <h3>Install & Run Server</h3>
+        <p>Install dependencies and start this Flask server on your PC.</p>
+        <code>pip install -r requirements.txt</code><br/>
+        <code>python server.py</code>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <h3>Start Ngrok Tunnel</h3>
+        <p>Expose your local server to the internet so ESP32-CAM can reach it.</p>
+        <code>ngrok http 5000</code><br/>
+        <p style="margin-top:8px">Copy the <strong style="color:#fff">https://xxxx.ngrok.io</strong> URL</p>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <h3>Flash ESP32-CAM</h3>
+        <p>Upload the <strong style="color:#fff">esp32_cam.ino</strong> sketch. Paste your Ngrok URL + WiFi credentials into the config section.</p>
+        <code>serverURL = "https://xxxx.ngrok.io/detect-face"</code>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const EMOTIONS = {
+    happy:"😄", sad:"😢", angry:"😠", fear:"😨",
+    surprise:"😲", neutral:"😐", disgust:"🤢"
+  };
+
+  async function checkStatus() {
+    try {
+      const r = await fetch("/status");
+      if (r.ok) {
+        document.getElementById("status-dot").classList.add("online");
+        document.getElementById("status-text").textContent = "SERVER ONLINE";
+      }
+    } catch {
+      document.getElementById("status-dot").classList.remove("online");
+      document.getElementById("status-text").textContent = "OFFLINE";
+    }
+  }
+
+  async function pollLogs() {
+    try {
+      const r = await fetch("/logs");
+      const data = await r.json();
+
+      // Update stats
+      document.getElementById("stat-total").textContent    = data.stats.total;
+      document.getElementById("stat-detected").textContent = data.stats.detected;
+      document.getElementById("stat-noface").textContent   = data.stats.not_detected;
+
+      // Update log list
+      const logs = data.logs;
+      const logList = document.getElementById("log-list");
+
+      if (logs.length === 0) return;
+
+      // Latest entry
+      const latest = logs[logs.length - 1];
+
+      // Update processing time
+      if (latest.processing_time_sec !== undefined) {
+        document.getElementById("stat-time").textContent = latest.processing_time_sec + "s";
+      }
+
+      // Update camera feed
+      if (latest.image) {
+        const img = document.getElementById("last-image");
+        img.src = "data:image/jpeg;base64," + latest.image;
+        img.style.display = "block";
+        document.getElementById("no-feed").style.display = "none";
+      }
+
+      // Update result panel
+      const icon     = document.getElementById("status-icon");
+      const label    = document.getElementById("status-label");
+      const attrs    = document.getElementById("attrs");
+
+      if (latest.status === "face_detected") {
+        icon.className  = "status-icon detected";
+        icon.textContent = "✅";
+        label.className = "status-text detected";
+        label.textContent = "FACE DETECTED";
+        attrs.style.display = "flex";
+        document.getElementById("attr-age").textContent     = latest.age + " yrs";
+        document.getElementById("attr-gender").textContent  = latest.gender;
+        const emo = (latest.emotion || "").toLowerCase();
+        document.getElementById("attr-emotion").textContent = (EMOTIONS[emo] || "🙂") + " " + latest.emotion;
+        document.getElementById("attr-time").textContent    = latest.timestamp;
+      } else if (latest.status === "no_face") {
+        icon.className   = "status-icon not-detected";
+        icon.textContent = "❌";
+        label.className  = "status-text not-detected";
+        label.textContent = "NO FACE FOUND";
+        attrs.style.display = "none";
+      }
+
+      // Rebuild log
+      logList.innerHTML = [...logs].reverse().map(entry => {
+        const isFace = entry.status === "face_detected";
+        const info = isFace
+          ? `Age ${entry.age} · ${entry.gender} · ${entry.emotion}`
+          : "No face detected in frame";
+        return `
+          <div class="log-entry ${isFace ? "face" : "noface"}">
+            <span class="log-time">${entry.timestamp}</span>
+            <span class="log-badge ${isFace ? "face" : "noface"}">${isFace ? "DETECTED" : "NO FACE"}</span>
+            <span class="log-info">${info} · ${entry.processing_time_sec}s</span>
+          </div>`;
+      }).join("");
+
+    } catch(e) { console.log("Poll error:", e); }
+  }
+
+  checkStatus();
+  pollLogs();
+  setInterval(checkStatus, 5000);
+  setInterval(pollLogs, 3000);
+</script>
+</body>
+</html>
